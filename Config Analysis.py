@@ -96,7 +96,6 @@ class RewritePolicy:
     rule: str
     action: str
 
-
 # =========================
 # 2) 파서 클래스
 # =========================
@@ -111,9 +110,15 @@ class NetScalerParser:
         self.routes: List[Route] = []
         self.acls: List[ACL] = []
         self.gateways: Dict[str, Gateway] = {}
+
+        # **Responder Actions, Rewrite Actions, vserver_bindings 제거**
+        # self.responder_actions: List[ResponderAction] = []
         self.responder_policies: Dict[str, ResponderPolicy] = {}
+        # self.rewrite_actions: List[RewriteAction] = []
         self.rewrite_policies: Dict[str, RewritePolicy] = {}
+
         self.ns_ip = ""
+        # vserver_bindings 제거
 
     def parse_nsconfig(self, line: str) -> str:
         parts = line.split()
@@ -251,6 +256,8 @@ class NetScalerParser:
                 gateway.authentication = parts[idx]
         return gateway
 
+    # Responder Policies만 유지 (Responder Actions 제거)
+
     def parse_responder_policy(self, line: str):
         prefix = "add responder policy "
         if not line.startswith(prefix):
@@ -271,6 +278,8 @@ class NetScalerParser:
             action=action
         )
 
+    # Rewrite Policies만 유지 (Rewrite Actions 제거)
+
     def parse_rewrite_policy(self, line: str):
         prefix = "add rewrite policy "
         if not line.startswith(prefix):
@@ -290,6 +299,9 @@ class NetScalerParser:
             rule=rule_part,
             action=action
         )
+
+    # bind lb vserver, bind vpn vserver -> service group만 후처리
+    # Responder/Rewrite 정책 바인딩 로직 제거
 
     def parse_netscaler_config(self, lines: List[str]) -> Dict:
         # 초기화
@@ -326,7 +338,7 @@ class NetScalerParser:
                 elif l.startswith("bind ssl vserver"):
                     self.parse_ssl(l)
                 elif l.startswith("bind lb vserver") or l.startswith("bind vpn vserver"):
-                    # serviceGroup 바인딩 후처리
+                    # serviceGroup 바인딩을 위한 후처리
                     todo_lb_bind.append(l)
                 elif l.startswith("add vlan"):
                     vlan = self.parse_vlan(l)
@@ -346,12 +358,12 @@ class NetScalerParser:
                     self.parse_responder_policy(l)
                 elif l.startswith("add rewrite policy"):
                     self.parse_rewrite_policy(l)
+                # Responder Actions, Rewrite Actions, vserver_bindings 제거
             except (IndexError, ValueError) as e:
-                # 파싱 에러 발생 시 표시
                 st.error(f"Error parsing line: {l}\nError: {e}")
                 continue
 
-        # bind lb vserver <vserver> <serviceGroupName> ...
+        # bind lb vserver <vserverName> <serviceGroupName> ...
         for line in todo_lb_bind:
             parts = line.split()
             if len(parts) >= 5 and parts[4] in self.service_groups:
@@ -360,7 +372,7 @@ class NetScalerParser:
                     vip.vip_servers = self.service_groups[parts[4]].servers
                     vip.vip_monitors = self.service_groups[parts[4]].monitors
 
-        # 최종 결과
+        # 최종 결과 (Responder Policies, Rewrite Policies만 남김)
         return {
             "vips": self.config,
             "vlans": self.vlans,
@@ -372,7 +384,7 @@ class NetScalerParser:
         }
 
 # =========================
-# 3) 표시 함수들
+# 3) 표시 함수
 # =========================
 
 def display_vip_info(vip: VIP):
@@ -383,33 +395,31 @@ def display_vip_info(vip: VIP):
     st.write(f"**Load Balancing Method**: {vip.vip_lbmethod}")
     st.write(f"**ADC IP**: {vip.adc_ip}")
 
-    # 서버 정보
     st.write("**Servers**:")
     if vip.vip_servers:
         for server in vip.vip_servers:
             st.write(f"- {server.server_name} ({server.ip}:{server.port or 'N/A'})")
     else:
-        st.info("  (바인딩된 서버 없음)")
+        st.write("  (바인딩된 서버 없음)")
 
-    # 모니터 정보
     st.write("**Monitors**:")
     if vip.vip_monitors:
         for monitor in vip.vip_monitors:
             st.write(f"- {monitor.monitor_name}")
     else:
-        st.info("  (바인딩된 모니터 없음)")
+        st.write("  (바인딩된 모니터 없음)")
 
-    # 인증서 정보 (ECC Curve 스킵)
     st.write("**Certificates**:")
     shown_any_cert = False
     if vip.bound_certkeys:
         for cert in vip.bound_certkeys:
+            # ECC Curve (P_256 등) 스킵 예시 => 필요 시 유지/삭제
             if cert.certkeyname in ["P_256", "P_384", "P_224", "P_521"]:
                 continue
             st.write(f"- {cert.certkeyname} (SNI: {cert.snicert})")
             shown_any_cert = True
     if not shown_any_cert:
-        st.info("(바인딩된 인증서 없음 또는 ECC Curve만 존재)")
+        st.write("  (바인딩된 인증서 없음 또는 ECC Curve만 존재)")
 
 def display_vlan_info(vlan: VLAN):
     st.write(f"**VLAN ID**: {vlan.vlan_id}")
@@ -418,14 +428,14 @@ def display_vlan_info(vlan: VLAN):
         for interface in vlan.interfaces:
             st.write(f"- {interface}")
     else:
-        st.info("  (바인딩된 인터페이스 없음)")
+        st.write("  (바인딩된 인터페이스 없음)")
 
     st.write("**IP Bindings**:")
     if vlan.ip_bindings:
         for binding in vlan.ip_bindings:
             st.write(f"- {binding}")
     else:
-        st.info("  (바인딩된 IP 없음)")
+        st.write("  (바인딩된 IP 없음)")
 
 def display_route_info(route: Route):
     st.write(f"**Network**: {route.network}/{route.netmask}")
@@ -459,11 +469,11 @@ def display_gateway_info(gateway: Gateway):
         st.write(f"**SSL Profile**: {gateway.ssl_profile}")
     st.write("**Certificates**:")
     if gateway.bound_certkeys:
-        # ECC Curve 스킵 여부 (원하면 동일하게 처리)
         for cert in gateway.bound_certkeys:
+            # ECC Curve 스킵할지 여부 => 필요 시 동일 처리
             st.write(f"- {cert.certkeyname} (SNI: {cert.snicert})")
     else:
-        st.info("  (바인딩된 인증서 없음)")
+        st.write("  (바인딩된 인증서 없음)")
 
 def display_responder_policy(rp: ResponderPolicy):
     st.write(f"**Responder Policy Name**: {rp.name}")
@@ -479,13 +489,11 @@ def display_rewrite_policy(rwp: RewritePolicy):
 
 
 # =========================
-# 4) 메인 앱 (Tabs 사용)
+# 4) 메인 앱 (가독성 개선 + 특정 항목 제거)
 # =========================
 
 def main():
-    st.title("NetScaler 구성 분석기 ")
-    st.markdown("""
-    """)
+    st.title("NetScaler 구성 분석기(가독성 개선) - Responder/Rewrite 'Actions' 및 바인딩 정책 제거")
 
     uploaded_file = st.file_uploader("NetScaler config 파일을 업로드하세요", type=["txt", "conf"])
     if uploaded_file is not None:
@@ -495,95 +503,84 @@ def main():
         parser = NetScalerParser()
         result = parser.parse_netscaler_config(lines)
 
-        # 탭 생성
-        tab_vip, tab_vlan, tab_route, tab_acl, tab_gw, tab_resp, tab_rew = st.tabs([
-            "VIP", "VLAN", "Routes", "ACL", "Gateway", "Responder Policies", "Rewrite Policies"
-        ])
-
         # 1) VIP
-        with tab_vip:
-            vip_list = list(result["vips"].values())
-            count_vip = len(vip_list)
-            st.markdown(f"**Load Balancing VServers (VIP) [총 {count_vip}개]**")
-            if count_vip == 0:
-                st.warning("등록된 LB VServer가 없습니다.")
-            else:
-                for i, vip in enumerate(vip_list, start=1):
-                    with st.expander(f"{i}. {vip.vip_name}"):
-                        display_vip_info(vip)
+        vip_list = list(result["vips"].values())
+        count_vip = len(vip_list)
+        st.subheader(f"Load Balancing VServers (VIP) [총 {count_vip}개]")
+        if count_vip == 0:
+            st.write("등록된 LB VServer가 없습니다.")
+        else:
+            for i, vip in enumerate(vip_list, start=1):
+                with st.expander(f"{i}. {vip.vip_name}"):
+                    display_vip_info(vip)
 
         # 2) VLAN
-        with tab_vlan:
-            vlan_list = list(result["vlans"].values())
-            count_vlan = len(vlan_list)
-            st.markdown(f"**VLAN [총 {count_vlan}개]**")
-            if count_vlan == 0:
-                st.warning("등록된 VLAN이 없습니다.")
-            else:
-                for i, vlan in enumerate(vlan_list, start=1):
-                    with st.expander(f"{i}. VLAN ID: {vlan.vlan_id}"):
-                        display_vlan_info(vlan)
+        vlan_list = list(result["vlans"].values())
+        count_vlan = len(vlan_list)
+        st.subheader(f"VLAN [총 {count_vlan}개]")
+        if count_vlan == 0:
+            st.write("등록된 VLAN이 없습니다.")
+        else:
+            for i, vlan in enumerate(vlan_list, start=1):
+                with st.expander(f"{i}. VLAN ID: {vlan.vlan_id}"):
+                    display_vlan_info(vlan)
 
         # 3) Routes
-        with tab_route:
-            route_list = result["routes"]
-            count_route = len(route_list)
-            st.markdown(f"**경로 [총 {count_route}개]**")
-            if count_route == 0:
-                st.warning("등록된 경로가 없습니다.")
-            else:
-                for i, route in enumerate(route_list, start=1):
-                    with st.expander(f"{i}. Route: {route.network}/{route.netmask}"):
-                        display_route_info(route)
+        route_list = result["routes"]
+        count_route = len(route_list)
+        st.subheader(f"경로 [총 {count_route}개]")
+        if count_route == 0:
+            st.write("등록된 경로가 없습니다.")
+        else:
+            for i, route in enumerate(route_list, start=1):
+                with st.expander(f"{i}. Route: {route.network}/{route.netmask}"):
+                    display_route_info(route)
 
         # 4) ACL
-        with tab_acl:
-            acl_list = result["acls"]
-            count_acl = len(acl_list)
-            st.markdown(f"**ACL [총 {count_acl}개]**")
-            if count_acl == 0:
-                st.warning("등록된 ACL이 없습니다.")
-            else:
-                for i, acl_obj in enumerate(acl_list, start=1):
-                    with st.expander(f"{i}. ACL: {acl_obj.acl_name}"):
-                        display_acl_info(acl_obj)
+        acl_list = result["acls"]
+        count_acl = len(acl_list)
+        st.subheader(f"ACL [총 {count_acl}개]")
+        if count_acl == 0:
+            st.write("등록된 ACL이 없습니다.")
+        else:
+            for i, acl_obj in enumerate(acl_list, start=1):
+                with st.expander(f"{i}. ACL: {acl_obj.acl_name}"):
+                    display_acl_info(acl_obj)
 
         # 5) Gateway
-        with tab_gw:
-            gw_list = list(result["gateways"].values())
-            count_gw = len(gw_list)
-            st.markdown(f"**게이트웨이(VPN VServer) [총 {count_gw}개]**")
-            if count_gw == 0:
-                st.warning("등록된 게이트웨이가 없습니다.")
-            else:
-                for i, gw in enumerate(gw_list, start=1):
-                    with st.expander(f"{i}. Gateway: {gw.name}"):
-                        display_gateway_info(gw)
+        gw_list = list(result["gateways"].values())
+        count_gw = len(gw_list)
+        st.subheader(f"게이트웨이(VPN VServer) [총 {count_gw}개]")
+        if count_gw == 0:
+            st.write("등록된 게이트웨이가 없습니다.")
+        else:
+            for i, gw in enumerate(gw_list, start=1):
+                with st.expander(f"{i}. Gateway: {gw.name}"):
+                    display_gateway_info(gw)
 
         # 6) Responder Policies
-        with tab_resp:
-            rp_list = result["responder_policies"]
-            count_rp = len(rp_list)
-            st.markdown(f"**응답자 정책 (Responder Policies) [총 {count_rp}개]**")
-            if count_rp == 0:
-                st.warning("등록된 Responder Policy가 없습니다.")
-            else:
-                for i, rp in enumerate(rp_list, start=1):
-                    with st.expander(f"{i}. {rp.name}"):
-                        display_responder_policy(rp)
+        rp_list = result["responder_policies"]
+        count_rp = len(rp_list)
+        st.subheader(f"응답자 정책 (Responder Policies) [총 {count_rp}개]")
+        if count_rp == 0:
+            st.write("등록된 Responder Policy가 없습니다.")
+        else:
+            for i, rp in enumerate(rp_list, start=1):
+                with st.expander(f"{i}. {rp.name}"):
+                    display_responder_policy(rp)
 
         # 7) Rewrite Policies
-        with tab_rew:
-            rwp_list = result["rewrite_policies"]
-            count_rwp = len(rwp_list)
-            st.markdown(f"**리라이트 정책 (Rewrite Policies) [총 {count_rwp}개]**")
-            if count_rwp == 0:
-                st.warning("등록된 Rewrite Policy가 없습니다.")
-            else:
-                for i, rwp in enumerate(rwp_list, start=1):
-                    with st.expander(f"{i}. {rwp.name}"):
-                        display_rewrite_policy(rwp)
+        rwp_list = result["rewrite_policies"]
+        count_rwp = len(rwp_list)
+        st.subheader(f"리라이트 정책 (Rewrite Policies) [총 {count_rwp}개]")
+        if count_rwp == 0:
+            st.write("등록된 Rewrite Policy가 없습니다.")
+        else:
+            for i, rwp in enumerate(rwp_list, start=1):
+                with st.expander(f"{i}. {rwp.name}"):
+                    display_rewrite_policy(rwp)
 
+        # Responder Actions / Rewrite Actions / vServer 바인딩된 Responder/Rewrite => 전부 제거
 
 if __name__ == "__main__":
     main()
